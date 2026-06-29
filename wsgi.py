@@ -157,7 +157,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'has_roof_terrace': 0, 'has_basement': 0, 'has_utility_room': 0,
         'has_ground_floor_wc': 0, 'has_converted_garage': 0,
         'best_sqft': sqft,
-        'days_since_2018': (pd.Timestamp('2025-06-01') - pd.Timestamp('2018-01-01')).days,
+        'days_since_2018': 2708,  # days from 2018-01-01 to 2025-06-01
         'lat': lat, 'lng': lng, 'bedrooms': beds,
         'ensuite_count': ensuite, 'reception_count': reception,
         'sqft_per_bedroom': sqft / max(beds, 1),
