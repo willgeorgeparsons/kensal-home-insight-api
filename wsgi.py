@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler
 
 import json as _json
 import numpy as _np
+import numpy as np
 
 # Load model once at module level (cold start cache)
 _bundle = None
