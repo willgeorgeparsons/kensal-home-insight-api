@@ -192,7 +192,8 @@ class handler(BaseHTTPRequestHandler):
             result = predict(address, postcode, sqft, condition, property_type, bedrooms)
             self._respond(200, result)
         except Exception as e:
-            self._respond(500, {'error': str(e)})
+            import traceback
+            self._respond(500, {'error': str(e), 'traceback': traceback.format_exc()})
 
     def do_OPTIONS(self):
         self.send_response(200)
