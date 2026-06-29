@@ -11,9 +11,9 @@ _bundle = None
 def load_bundle():
     global _bundle
     if _bundle is None:
-        model_path = os.path.join(os.path.dirname(__file__), '..', 'model_v2.pkl')
-        with open(model_path, 'rb') as f:
-            _bundle = pickle.load(f)
+        model_path = os.path.join(os.path.dirname(__file__), '..', 'model_v2.json')
+        with open(model_path, 'r') as f:
+            _bundle = json.load(f)
     return _bundle
 
 def extract_street(address):
@@ -136,19 +136,21 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'condition_x_psf': cond_ord * anchor,
     }
 
-    import lightgbm as lgb
-    # Build feature vector as ordered list matching training features
-    feature_vals = []
+    import pandas as pd
     cat_features = ['sector','street_name','construction_era','property_sub_type',
                     'tenure','kitchen_position','loft_type','extension_type']
-    for f in features:
-        val = row.get(f, 0)
-        if f in cat_features:
-            feature_vals.append(str(val) if val is not None else 'unknown')
-        else:
-            feature_vals.append(float(val) if val is not None else 0.0)
-
-        X = np.array([feature_vals], dtype=object)
+    pandas_categorical = bundle['model'].get('pandas_categorical', [])
+    cat_maps = {}
+    for i, cf in enumerate(cat_features):
+        if i < len(pandas_categorical):
+            cat_maps[cf] = {v: j for j, v in enumerate(pandas_categorical[i])}
+    X = pd.DataFrame([row])[features]
+    for c in cat_features:
+        if c in X.columns:
+            if c in cat_maps:
+                X[c] = X[c].map(cat_maps[c]).fillna(-1).astype(int)
+            else:
+                X[c] = X[c].astype('category')
     log_pred = model.predict(X)[0]
     estimate = int(np.exp(log_pred))
 
@@ -190,7 +192,8 @@ class handler(BaseHTTPRequestHandler):
             result = predict(address, postcode, sqft, condition, property_type, bedrooms)
             self._respond(200, result)
         except Exception as e:
-            self._respond(500, {'error': str(e)})
+            import traceback
+            self._respond(500, {'error': str(e), 'traceback': traceback.format_exc()})
 
     def do_OPTIONS(self):
         self.send_response(200)
