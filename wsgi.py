@@ -138,6 +138,10 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     sp_psf = street_psf.get(street, sector_psf.get(sector, 800))
     anchor_key = street + '|' + condition if condition else None
     anchor = inference_anchors.get(anchor_key, sp_psf) if anchor_key else sp_psf
+    # If full_renovation has no anchor, cap it below modernisation
+    if condition == 'full_renovation' and anchor_key not in inference_anchors:
+        mod_anchor = inference_anchors.get(street + '|modernisation', sp_psf)
+        anchor = min(anchor, mod_anchor * 0.93)
     lat = street_lat.get(street, 51.53)
     lng = street_lng.get(street, -0.22)
     beds = bedrooms or round(street_beds.get(street, 3))
