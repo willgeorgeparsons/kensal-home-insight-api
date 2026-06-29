@@ -1,2 +1,0 @@
-[tool.vercel]
-entrypoint = "api.valuate_v2:handler"
