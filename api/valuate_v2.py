@@ -139,10 +139,18 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     import pandas as pd
     cat_features = ['sector','street_name','construction_era','property_sub_type',
                     'tenure','kitchen_position','loft_type','extension_type']
+    pandas_categorical = bundle['model'].get('pandas_categorical', [])
+    cat_maps = {}
+    for i, cf in enumerate(cat_features):
+        if i < len(pandas_categorical):
+            cat_maps[cf] = {v: j for j, v in enumerate(pandas_categorical[i])}
     X = pd.DataFrame([row])[features]
     for c in cat_features:
         if c in X.columns:
-            X[c] = X[c].astype('category')
+            if c in cat_maps:
+                X[c] = X[c].map(cat_maps[c]).fillna(-1).astype(int)
+            else:
+                X[c] = X[c].astype('category')
     log_pred = model.predict(X)[0]
     estimate = int(np.exp(log_pred))
 
