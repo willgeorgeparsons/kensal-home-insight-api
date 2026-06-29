@@ -123,7 +123,6 @@ STREET_FEATURES = {
 
 def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     bundle = load_bundle()
-    model = bundle['model']
     features = bundle['features']
     street_psf = bundle['street_psf']
     sector_psf = bundle['sector_psf']
