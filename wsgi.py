@@ -46,7 +46,7 @@ def _predict_tree(tree, x):
 
 def _run_model(bundle, vec):
     total = 0.0
-    for tree in bundle['model_json']['tree_info']:
+    for tree in bundle['model']['tree_info']:
         total += _predict_tree(tree, vec)
     return total
 
@@ -173,15 +173,20 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'condition_x_psf': cond_ord * anchor,
     }
 
-    cat_encodings = bundle.get('cat_encodings', {})
-    cat_cols = list(cat_encodings.keys())
+    cat_feature_names = ['sector','street_name','construction_era','property_sub_type',
+                          'tenure','kitchen_position','loft_type','extension_type']
+    pandas_categorical = bundle['model'].get('pandas_categorical', [])
+    cat_encodings = {}
+    for i, cf in enumerate(cat_feature_names):
+        if i < len(pandas_categorical):
+            cat_encodings[cf] = {v: j for j, v in enumerate(pandas_categorical[i])}
     features = bundle['features']
     vec = []
     for f in features:
         val = row.get(f, 0)
-        if f in cat_cols:
+        if f in cat_encodings:
             enc = cat_encodings[f]
-            vec.append(float(enc.get(str(val), enc.get('unknown', 0))))
+            vec.append(float(enc.get(str(val), -1)))
         else:
             vec.append(float(val) if val is not None else 0.0)
     log_pred = _run_model(bundle, vec)
