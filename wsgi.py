@@ -2,6 +2,18 @@
 import json
 import os
 import pickle
+import ctypes
+import ctypes.util
+
+# Vercel OpenMP workaround for LightGBM
+try:
+    ctypes.CDLL('libgomp.so.1')
+except:
+    try:
+        import subprocess
+        subprocess.run(['apt-get', 'install', '-y', 'libgomp1'], capture_output=True)
+    except:
+        pass
 import re
 from http.server import BaseHTTPRequestHandler
 
