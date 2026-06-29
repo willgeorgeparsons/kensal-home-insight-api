@@ -94,6 +94,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     features = bundle['features']
     street_psf = bundle['street_psf']
     sector_psf = bundle['sector_psf']
+    college_park_psf = bundle.get('college_park_psf', 650.0)
     inference_anchors = bundle.get('inference_anchors', {})
     street_lat = bundle['street_lat']
     street_lng = bundle['street_lng']
@@ -102,7 +103,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     sector = get_sector(postcode)
     street = extract_street(address)
     cond_ord = CONDITION_ORDER.get(condition, 3) if condition else 3
-    sp_psf = street_psf.get(street, sector_psf.get(sector, 800))
+    _sector_fallback = college_park_psf if sector == 'NW10 6' else sector_psf.get(sector, 800)
+    sp_psf = street_psf.get(street, _sector_fallback)
     anchor_key = street + '|' + condition if condition else None
     anchor = inference_anchors.get(anchor_key, sp_psf) if anchor_key else sp_psf
     lat = street_lat.get(street, 51.53)
