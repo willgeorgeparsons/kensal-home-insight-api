@@ -149,7 +149,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
             feature_vals.append(str(val) if val is not None else 'unknown')
         else:
             feature_vals.append(float(val) if val is not None else 0.0)
-    X = np.array([feature_vals], dtype=object)
+
+        X = np.array([feature_vals], dtype=object)
     log_pred = model.predict(X)[0]
     estimate = int(np.exp(log_pred))
 
