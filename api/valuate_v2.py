@@ -136,18 +136,13 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'condition_x_psf': cond_ord * anchor,
     }
 
-    import lightgbm as lgb
-    # Build feature vector as ordered list matching training features
-    feature_vals = []
+    import pandas as pd
     cat_features = ['sector','street_name','construction_era','property_sub_type',
                     'tenure','kitchen_position','loft_type','extension_type']
-    for f in features:
-        val = row.get(f, 0)
-        if f in cat_features:
-            feature_vals.append(str(val) if val is not None else 'unknown')
-        else:
-            feature_vals.append(float(val) if val is not None else 0.0)
-    X = np.array([feature_vals], dtype=object)
+    X = pd.DataFrame([row])[features]
+    for c in cat_features:
+        if c in X.columns:
+            X[c] = X[c].astype('category')
     log_pred = model.predict(X)[0]
     estimate = int(np.exp(log_pred))
 
