@@ -11,7 +11,7 @@ _bundle = None
 def load_bundle():
     global _bundle
     if _bundle is None:
-        model_path = os.path.join(os.path.dirname(__file__), '..', 'model_v2.pkl')
+        model_path = os.path.join(os.path.dirname(__file__), 'model_v2.pkl')
         with open(model_path, 'rb') as f:
             _bundle = pickle.load(f)
     return _bundle
