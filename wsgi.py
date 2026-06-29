@@ -1,7 +1,6 @@
 
 import json
 import os
-import pickle
 import ctypes
 import ctypes.util
 
@@ -17,16 +16,38 @@ except:
 import re
 from http.server import BaseHTTPRequestHandler
 
+import json as _json
+import numpy as _np
+
 # Load model once at module level (cold start cache)
 _bundle = None
 
 def load_bundle():
     global _bundle
     if _bundle is None:
-        model_path = os.path.join(os.path.dirname(__file__), 'model_v2.pkl')
-        with open(model_path, 'rb') as f:
-            _bundle = pickle.load(f)
+        model_path = os.path.join(os.path.dirname(__file__), 'model_v2.json')
+        with open(model_path, 'r') as f:
+            _bundle = _json.load(f)
     return _bundle
+
+def _predict_tree(tree, x):
+    node = tree['tree_structure']
+    while 'split_feature' in node:
+        feat_idx = node['split_feature']
+        val = x[feat_idx]
+        threshold = node['threshold']
+        if node.get('decision_type', '<=') == '==':
+            go_left = str(int(val)) in [c.strip() for c in str(threshold).split('||')]
+        else:
+            go_left = val <= float(threshold)
+        node = node['left_child'] if go_left else node['right_child']
+    return node['leaf_value']
+
+def _run_model(bundle, vec):
+    total = 0.0
+    for tree in bundle['model_json']['tree_info']:
+        total += _predict_tree(tree, vec)
+    return total
 
 def extract_street(address):
     s = re.sub(r'^(Flat|Unit|Apartment)\s+[^,]+,\s*', '', address, flags=re.IGNORECASE)
@@ -148,20 +169,18 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'condition_x_psf': cond_ord * anchor,
     }
 
-    import lightgbm as lgb
-    # Build feature vector as ordered list matching training features
-    feature_vals = []
-    cat_features = ['sector','street_name','construction_era','property_sub_type',
-                    'tenure','kitchen_position','loft_type','extension_type']
+    cat_encodings = bundle.get('cat_encodings', {})
+    cat_cols = list(cat_encodings.keys())
+    features = bundle['features']
+    vec = []
     for f in features:
         val = row.get(f, 0)
-        if f in cat_features:
-            feature_vals.append(str(val) if val is not None else 'unknown')
+        if f in cat_cols:
+            enc = cat_encodings[f]
+            vec.append(float(enc.get(str(val), enc.get('unknown', 0))))
         else:
-            feature_vals.append(float(val) if val is not None else 0.0)
-
-        X = np.array([feature_vals], dtype=object)
-    log_pred = model.predict(X)[0]
+            vec.append(float(val) if val is not None else 0.0)
+    log_pred = _run_model(bundle, vec)
     estimate = int(np.exp(log_pred))
 
     # Confidence interval: +/- 10% (roughly 1 std dev of model error)
