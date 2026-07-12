@@ -68,7 +68,7 @@ def get_sector(postcode):
     parts = postcode.strip().split()
     return parts[0] + ' ' + parts[1][0]
 
-CONDITION_ORDER = {'full_renovation':1,'modernisation':2,'cosmetic':3,'good':4,'fully_refurbished':5}
+CONDITION_ORDER = {'full_renovation':1,'modernisation':2,'good':3,'fully_refurbished':4}
 
 STREET_FEATURES = {
     'all souls avenue':     dict(pct_pre1919=0.54, avg_reception=2, avg_ensuite=0, avg_extension=1, mode_kitchen='rear', mode_loft='none'),
@@ -161,6 +161,8 @@ def select_comps(bundle, street, sector, condition, sqft, limit=6, subject_addre
 
     return top, len(pool), median_price, scope
 
+CONDITIONS_IN_ORDER = ['full_renovation', 'modernisation', 'good', 'fully_refurbished']
+
 def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     bundle = load_bundle()
     features = bundle['features']
@@ -173,14 +175,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
 
     sector = get_sector(postcode)
     street = extract_street(address)
-    cond_ord = CONDITION_ORDER.get(condition, 3) if condition else 3
     sp_psf = street_psf.get(street, sector_psf.get(sector, 800))
-    anchor_key = street + '|' + condition if condition else None
-    anchor = inference_anchors.get(anchor_key, sp_psf) if anchor_key else sp_psf
-    # If full_renovation has no anchor, cap it below modernisation
-    if condition == 'full_renovation' and anchor_key not in inference_anchors:
-        mod_anchor = inference_anchors.get(street + '|modernisation', sp_psf)
-        anchor = min(anchor, mod_anchor * 0.93)
     lat = street_lat.get(street, 51.53)
     lng = street_lng.get(street, -0.22)
     beds = bedrooms or round(street_beds.get(street, 3))
@@ -193,25 +188,6 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     loft = sf.get('mode_loft', 'unknown')
     ptype = (property_type or 'terraced_house').lower().replace(' ', '_').replace('-', '_')
 
-    row = {
-        'sector': sector, 'street_name': street, 'construction_era': era,
-        'property_sub_type': ptype, 'tenure': 'freehold',
-        'kitchen_position': kitchen, 'loft_type': loft, 'extension_type': 'unknown',
-        'has_floorplan': 1, 'off_street_parking': 0, 'has_garage': 0,
-        'has_roof_terrace': 0, 'has_basement': 0, 'has_utility_room': 0,
-        'has_ground_floor_wc': 0, 'has_converted_garage': 0,
-        'best_sqft': sqft,
-        'days_since_2018': 2708,  # days from 2018-01-01 to 2025-06-01
-        'lat': lat, 'lng': lng, 'bedrooms': beds,
-        'ensuite_count': ensuite, 'reception_count': reception,
-        'sqft_per_bedroom': sqft / max(beds, 1),
-        'bath_to_bed': (ensuite + 1) / max(beds, 1),
-        'extension_count': extension,
-        'street_psf': sp_psf, 'anchor_psf': anchor,
-        'condition_ordinal': cond_ord,
-        'condition_x_psf': cond_ord * anchor,
-    }
-
     cat_feature_names = ['sector','street_name','construction_era','property_sub_type',
                           'tenure','kitchen_position','loft_type','extension_type']
     pandas_categorical = bundle['model'].get('pandas_categorical', [])
@@ -219,23 +195,77 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     for i, cf in enumerate(cat_feature_names):
         if i < len(pandas_categorical):
             cat_encodings[cf] = {v: j for j, v in enumerate(pandas_categorical[i])}
-    vec = []
-    for f in features:
-        val = row.get(f, 0)
-        if f in cat_encodings:
-            enc = cat_encodings[f]
-            vec.append(float(enc.get(str(val), -1)))
-        else:
-            vec.append(float(val) if val is not None else 0.0)
 
-    log_pred = _run_model(bundle['model']['tree_info'], vec)
-    estimate = float(np.exp(log_pred))
+    anchors_by_cond = {}
+    def build_row_and_vec(cond):
+        cond_ord = CONDITION_ORDER.get(cond, 3) if cond else 3
+        anchor_key = street + '|' + cond if cond else None
+        anchor = inference_anchors.get(anchor_key, sp_psf) if anchor_key else sp_psf
+        # If full_renovation has no anchor, cap it below modernisation
+        if cond == 'full_renovation' and anchor_key not in inference_anchors:
+            mod_anchor = inference_anchors.get(street + '|modernisation', sp_psf)
+            anchor = min(anchor, mod_anchor * 0.93)
+        anchors_by_cond[cond] = anchor
+        row = {
+            'sector': sector, 'street_name': street, 'construction_era': era,
+            'property_sub_type': ptype, 'tenure': 'freehold',
+            'kitchen_position': kitchen, 'loft_type': loft, 'extension_type': 'unknown',
+            'has_floorplan': 1, 'off_street_parking': 0, 'has_garage': 0,
+            'has_roof_terrace': 0, 'has_basement': 0, 'has_utility_room': 0,
+            'has_ground_floor_wc': 0, 'has_converted_garage': 0,
+            'best_sqft': sqft,
+            'days_since_2018': 2708,  # days from 2018-01-01 to 2025-06-01
+            'lat': lat, 'lng': lng, 'bedrooms': beds,
+            'ensuite_count': ensuite, 'reception_count': reception,
+            'sqft_per_bedroom': sqft / max(beds, 1),
+            'bath_to_bed': (ensuite + 1) / max(beds, 1),
+            'extension_count': extension,
+            'street_psf': sp_psf, 'anchor_psf': anchor,
+            'condition_ordinal': cond_ord,
+            'condition_x_psf': cond_ord * anchor,
+        }
+        vec = []
+        for f in features:
+            val = row.get(f, 0)
+            if f in cat_encodings:
+                enc = cat_encodings[f]
+                vec.append(float(enc.get(str(val), -1)))
+            else:
+                vec.append(float(val) if val is not None else 0.0)
+        return vec
+
+    # Compute the raw model estimate for EVERY condition, then force the
+    # sequence to be non-decreasing (full_renovation -> ... -> fully_refurbished).
+    # This guarantees a "better" condition can never price lower than a
+    # "worse" one for the same property, which the raw per-condition street
+    # anchors cannot guarantee on their own (thin/noisy comps per tier).
+    raw_estimates = {}
+    vecs = {}
+    for cond in CONDITIONS_IN_ORDER:
+        vec = build_row_and_vec(cond)
+        vecs[cond] = vec
+        log_pred = _run_model(bundle['model']['tree_info'], vec)
+        raw_estimates[cond] = float(np.exp(log_pred))
+
+    corrected = {}
+    running_max = 0.0
+    for cond in CONDITIONS_IN_ORDER:
+        running_max = max(running_max, raw_estimates[cond])
+        corrected[cond] = running_max
+
+    estimate = corrected[condition] if condition in corrected else corrected['good']
+    raw_estimate_for_requested = raw_estimates.get(condition, estimate)
+    correction_delta = estimate - raw_estimate_for_requested
+    vec = vecs.get(condition, vecs['good'])
+    anchor = anchors_by_cond.get(condition, anchors_by_cond['good'])
 
     # Real calibrated range using the P10/P90 quantile models, matching
     # the 1.4x band-width multiplier and safety clamp proven at 81%
     # real coverage against the 100-property test set. Falls back to
     # the old +/-9% behaviour only if quantile trees aren't present
-    # in model_v2.json (e.g. an older deploy).
+    # in model_v2.json (e.g. an older deploy). The band is computed
+    # against the RAW estimate then shifted by the same monotonic
+    # correction applied to the point estimate, so width is preserved.
     if 'quantile_models' in bundle:
         p10_log = _run_model(bundle['quantile_models']['p10']['tree_info'], vec)
         p90_log = _run_model(bundle['quantile_models']['p90']['tree_info'], vec)
@@ -243,16 +273,24 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         p90_raw = float(np.exp(p90_log))
         multiplier = bundle.get('band_width_multiplier', 1.0)
 
-        lower_gap = max(0.0, estimate - p10_raw)
-        upper_gap = max(0.0, p90_raw - estimate)
-        low = estimate - multiplier * lower_gap
-        high = estimate + multiplier * upper_gap
+        lower_gap = max(0.0, raw_estimate_for_requested - p10_raw)
+        upper_gap = max(0.0, p90_raw - raw_estimate_for_requested)
+        low = raw_estimate_for_requested - multiplier * lower_gap + correction_delta
+        high = raw_estimate_for_requested + multiplier * upper_gap + correction_delta
         # Safety clamp: estimate is ALWAYS inside the band, band is NEVER negative
         low = max(0.0, min(low, estimate))
         high = max(high, estimate)
     else:
         low = estimate * 0.91
         high = estimate * 1.09
+
+    band_width_pct = (high - low) / estimate * 100 if estimate else 0
+    if band_width_pct < 20:
+        confidence = 'High'
+    elif band_width_pct < 40:
+        confidence = 'Medium'
+    else:
+        confidence = 'Low'
 
     estimate = int(estimate)
     low = int(low)
@@ -278,6 +316,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'comparablesScope': comp_scope,
         'psf': round(estimate / sqft) if sqft else None,
         'sectorPsf': round(sector_psf.get(sector, 800)),
+        'confidence': confidence,
     }
 
 class handler(BaseHTTPRequestHandler):
