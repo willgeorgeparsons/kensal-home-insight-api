@@ -284,14 +284,6 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         low = estimate * 0.91
         high = estimate * 1.09
 
-    band_width_pct = (high - low) / estimate * 100 if estimate else 0
-    if band_width_pct < 20:
-        confidence = 'High'
-    elif band_width_pct < 40:
-        confidence = 'Medium'
-    else:
-        confidence = 'Low'
-
     estimate = int(estimate)
     low = int(low)
     high = int(high)
@@ -299,6 +291,13 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     comps_top, pool_size, median_price, comp_scope = select_comps(
         bundle, street, sector, condition, sqft, subject_address=address
     )
+
+    if pool_size >= 15:
+        confidence = 'High'
+    elif pool_size >= 5:
+        confidence = 'Medium'
+    else:
+        confidence = 'Low'
 
     return {
         'estimate': estimate,
