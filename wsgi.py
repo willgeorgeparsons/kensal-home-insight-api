@@ -277,6 +277,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'comparables': comps_top,
         'comparablesScope': comp_scope,
         'psf': round(estimate / sqft) if sqft else None,
+        'sectorPsf': round(sector_psf.get(sector, 800)),
     }
 
 class handler(BaseHTTPRequestHandler):
