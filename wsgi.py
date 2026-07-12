@@ -276,6 +276,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'median': median_price,
         'comparables': comps_top,
         'comparablesScope': comp_scope,
+        'psf': round(estimate / sqft) if sqft else None,
     }
 
 class handler(BaseHTTPRequestHandler):
