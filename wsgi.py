@@ -126,12 +126,19 @@ STREET_FEATURES = {
     'whitmore gardens':     dict(pct_pre1919=0.36, avg_reception=2, avg_ensuite=0, avg_extension=1, mode_kitchen='rear', mode_loft='bedroom'),
 }
 
-def select_comps(bundle, street, sector, condition, sqft, limit=6):
+def _normalize_address(addr):
+    return re.sub(r'\s+', ' ', (addr or '').strip().lower())
+
+def select_comps(bundle, street, sector, condition, sqft, limit=6, subject_address=None):
     """Real comparable sales for this property: same street preferred,
     falls back to sector if the street has too few. Sorted so the most
     relevant (matching condition, closest sqft, most recent) come first.
-    Returns (comps_list, pool_size, median_price, scope)."""
+    Excludes the subject property's own past sale if it happens to be in
+    the training data. Returns (comps_list, pool_size, median_price, scope)."""
     all_comps = bundle.get('comps', [])
+    subject_norm = _normalize_address(subject_address) if subject_address else None
+    if subject_norm:
+        all_comps = [c for c in all_comps if _normalize_address(c.get('address')) != subject_norm]
     street_comps = [c for c in all_comps if c.get('street') == street]
     if len(street_comps) >= 3:
         pool = street_comps
@@ -252,7 +259,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     high = int(high)
 
     comps_top, pool_size, median_price, comp_scope = select_comps(
-        bundle, street, sector, condition, sqft
+        bundle, street, sector, condition, sqft, subject_address=address
     )
 
     return {
