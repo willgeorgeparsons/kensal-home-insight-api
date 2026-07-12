@@ -14,6 +14,7 @@ except:
     except:
         pass
 import re
+import statistics
 from http.server import BaseHTTPRequestHandler
 
 import json as _json
@@ -125,6 +126,34 @@ STREET_FEATURES = {
     'whitmore gardens':     dict(pct_pre1919=0.36, avg_reception=2, avg_ensuite=0, avg_extension=1, mode_kitchen='rear', mode_loft='bedroom'),
 }
 
+def select_comps(bundle, street, sector, condition, sqft, limit=6):
+    """Real comparable sales for this property: same street preferred,
+    falls back to sector if the street has too few. Sorted so the most
+    relevant (matching condition, closest sqft, most recent) come first.
+    Returns (comps_list, pool_size, median_price, scope)."""
+    all_comps = bundle.get('comps', [])
+    street_comps = [c for c in all_comps if c.get('street') == street]
+    if len(street_comps) >= 3:
+        pool = street_comps
+        scope = 'street'
+    else:
+        pool = [c for c in all_comps if c.get('sector') == sector]
+        scope = 'sector'
+
+    def sort_key(c):
+        cond_match = 0 if c.get('condition') == condition else 1
+        sqft_diff = abs((c.get('sqft') or 0) - (sqft or 0)) if sqft else 0
+        # ISO date strings sort correctly as strings -- most recent first
+        recency = c.get('date') or ''
+        return (cond_match, sqft_diff, ''.join(chr(255 - ord(ch)) for ch in recency))
+
+    pool_sorted = sorted(pool, key=sort_key)
+    top = pool_sorted[:limit]
+    prices = [c['price'] for c in pool if c.get('price')]
+    median_price = int(statistics.median(prices)) if prices else None
+
+    return top, len(pool), median_price, scope
+
 def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     bundle = load_bundle()
     features = bundle['features']
@@ -222,6 +251,10 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     low = int(low)
     high = int(high)
 
+    comps_top, pool_size, median_price, comp_scope = select_comps(
+        bundle, street, sector, condition, sqft
+    )
+
     return {
         'estimate': estimate,
         'low': low,
@@ -232,6 +265,10 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'streetAnchorPsf': round(sp_psf),
         'conditionAnchorPsf': round(anchor),
         'model': 'v2',
+        'poolSize': pool_size,
+        'median': median_price,
+        'comparables': comps_top,
+        'comparablesScope': comp_scope,
     }
 
 class handler(BaseHTTPRequestHandler):
