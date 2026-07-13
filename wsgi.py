@@ -273,10 +273,15 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         p90_raw = float(np.exp(p90_log))
         multiplier = bundle.get('band_width_multiplier', 1.0)
 
-        lower_gap = max(0.0, raw_estimate_for_requested - p10_raw)
-        upper_gap = max(0.0, p90_raw - raw_estimate_for_requested)
-        low = raw_estimate_for_requested - multiplier * lower_gap + correction_delta
-        high = raw_estimate_for_requested + multiplier * upper_gap + correction_delta
+        # Scale the band as a PERCENTAGE of the raw estimate, then apply that
+        # same percentage to the corrected estimate -- rather than shifting an
+        # absolute £ offset, which can push the band past its own edge when
+        # the monotonic correction is large relative to the original band
+        # (this was collapsing some bands to zero width, e.g. 84 Oliphant St).
+        lower_gap_pct = max(0.0, (raw_estimate_for_requested - p10_raw) / raw_estimate_for_requested) if raw_estimate_for_requested else 0.0
+        upper_gap_pct = max(0.0, (p90_raw - raw_estimate_for_requested) / raw_estimate_for_requested) if raw_estimate_for_requested else 0.0
+        low = estimate * (1 - multiplier * lower_gap_pct)
+        high = estimate * (1 + multiplier * upper_gap_pct)
         # Safety clamp: estimate is ALWAYS inside the band, band is NEVER negative
         low = max(0.0, min(low, estimate))
         high = max(high, estimate)
