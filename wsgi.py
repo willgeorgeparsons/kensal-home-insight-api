@@ -280,6 +280,18 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         # (this was collapsing some bands to zero width, e.g. 84 Oliphant St).
         lower_gap_pct = max(0.0, (raw_estimate_for_requested - p10_raw) / raw_estimate_for_requested) if raw_estimate_for_requested else 0.0
         upper_gap_pct = max(0.0, (p90_raw - raw_estimate_for_requested) / raw_estimate_for_requested) if raw_estimate_for_requested else 0.0
+        # Quantile crossing guard: the P10/P90 models are trained
+        # independently from the main model, so nothing stops P90 from
+        # predicting BELOW (or P10 from predicting ABOVE) the main
+        # model's own point estimate on some inputs (seen on 84 Oliphant
+        # St -- P90 came in under the estimate for 'good' and
+        # 'fully_refurbished'). When that happens, fall back to a
+        # symmetric band using whichever side's gap IS trustworthy,
+        # rather than silently collapsing that side to zero width.
+        if upper_gap_pct <= 0 and lower_gap_pct > 0:
+            upper_gap_pct = lower_gap_pct
+        elif lower_gap_pct <= 0 and upper_gap_pct > 0:
+            lower_gap_pct = upper_gap_pct
         low = estimate * (1 - multiplier * lower_gap_pct)
         high = estimate * (1 + multiplier * upper_gap_pct)
         # Safety clamp: estimate is ALWAYS inside the band, band is NEVER negative
