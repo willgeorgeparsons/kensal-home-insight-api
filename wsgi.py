@@ -163,6 +163,43 @@ def select_comps(bundle, street, sector, condition, sqft, limit=6, subject_addre
 
 CONDITIONS_IN_ORDER = ['full_renovation', 'modernisation', 'good', 'fully_refurbished']
 
+def _haversine_km(lat1, lng1, lat2, lng2):
+    from math import radians, sin, cos, sqrt, atan2
+    R = 6371.0
+    dlat = radians(lat2 - lat1)
+    dlng = radians(lng2 - lng1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng/2)**2
+    return R * 2 * atan2(sqrt(a), sqrt(1-a))
+
+def count_street_condition_comps(bundle, street, condition):
+    """Exact real comp count for this street+condition -- the honest number
+    to show a user, distinct from the wider comparables list shown in the UI."""
+    if not condition:
+        return 0
+    comps = bundle.get('comps', [])
+    return sum(1 for c in comps if c.get('street') == street and c.get('condition') == condition)
+
+def radius_rescue_anchor(bundle, street, condition, lat, lng, radius_km=0.5, min_comps=2):
+    """When a street+condition has too few comps to trust on its own, search
+    nearby comps of the SAME condition within a radius, rather than falling
+    all the way back to a blended street/sector average that ignores
+    condition entirely. Returns (anchor_psf, comp_count) or (None, 0)."""
+    if not condition or lat is None or lng is None:
+        return None, 0
+    comps = bundle.get('comps', [])
+    nearby = []
+    for c in comps:
+        if c.get('condition') != condition:
+            continue
+        if c.get('lat') is None or c.get('lng') is None or c.get('psf') is None:
+            continue
+        d = _haversine_km(lat, lng, c['lat'], c['lng'])
+        if d <= radius_km:
+            nearby.append(c['psf'])
+    if len(nearby) >= min_comps:
+        return float(np.median(nearby)), len(nearby)
+    return None, 0
+
 def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     bundle = load_bundle()
     features = bundle['features']
@@ -197,15 +234,27 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
             cat_encodings[cf] = {v: j for j, v in enumerate(pandas_categorical[i])}
 
     anchors_by_cond = {}
+    anchor_sources = {}
     def build_row_and_vec(cond):
         cond_ord = CONDITION_ORDER.get(cond, 3) if cond else 3
         anchor_key = street + '|' + cond if cond else None
-        anchor = inference_anchors.get(anchor_key, sp_psf) if anchor_key else sp_psf
+        if anchor_key and anchor_key in inference_anchors:
+            anchor = inference_anchors[anchor_key]
+            source = 'street_condition'
+        else:
+            rescued, rescued_n = radius_rescue_anchor(bundle, street, cond, lat, lng)
+            if rescued is not None:
+                anchor = rescued
+                source = f'radius_rescue_{rescued_n}_comps'
+            else:
+                anchor = sp_psf
+                source = 'street_blend'
         # If full_renovation has no anchor, cap it below modernisation
         if cond == 'full_renovation' and anchor_key not in inference_anchors:
             mod_anchor = inference_anchors.get(street + '|modernisation', sp_psf)
             anchor = min(anchor, mod_anchor * 0.93)
         anchors_by_cond[cond] = anchor
+        anchor_sources[cond] = source
         row = {
             'sector': sector, 'street_name': street, 'construction_era': era,
             'property_sub_type': ptype, 'tenure': 'freehold',
@@ -258,6 +307,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     correction_delta = estimate - raw_estimate_for_requested
     vec = vecs.get(condition, vecs['good'])
     anchor = anchors_by_cond.get(condition, anchors_by_cond['good'])
+    anchor_source = anchor_sources.get(condition, anchor_sources.get('good'))
+    condition_comp_count = count_street_condition_comps(bundle, street, condition)
 
     # Real calibrated range using the P10/P90 quantile models, matching
     # the 1.4x band-width multiplier and safety clamp proven at 81%
@@ -309,6 +360,22 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         bundle, street, sector, condition, sqft, subject_address=address
     )
 
+    if condition_comp_count >= 5:
+        confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street."
+    elif anchor_source and anchor_source.startswith('radius_rescue'):
+        n_rescued = anchor_source.split('_')[2]
+        confidence_note = (
+            f"Only {condition_comp_count} sale(s) of this exact condition on this street, "
+            f"so we included {n_rescued} similar sales from nearby streets to improve the estimate."
+        )
+    elif condition_comp_count >= 2:
+        confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street -- a small sample, treat with some caution."
+    else:
+        confidence_note = (
+            "Very few or no sales of this exact condition on this street. "
+            "This estimate leans on the street's overall price level rather than condition-specific data."
+        )
+
     if pool_size >= 15:
         confidence = 'High'
     elif pool_size >= 5:
@@ -333,6 +400,9 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'psf': round(estimate / sqft) if sqft else None,
         'sectorPsf': round(sector_psf.get(sector, 800)),
         'confidence': confidence,
+        'conditionCompCount': condition_comp_count,
+        'anchorSource': anchor_source,
+        'confidenceNote': confidence_note,
     }
 
 class handler(BaseHTTPRequestHandler):
