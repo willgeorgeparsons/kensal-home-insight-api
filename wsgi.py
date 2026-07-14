@@ -357,19 +357,26 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
 
     condition_psf_values = [c['psf'] for c in bundle.get('comps', [])
                             if c.get('street') == street and c.get('condition') == condition and c.get('psf') is not None]
-    if condition_comp_count >= 5:
-        confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street -- a solid, reliable sample."
-    elif condition_comp_count >= 2 and len(condition_psf_values) >= 2:
+    if condition_comp_count >= 2 and len(condition_psf_values) >= 2:
         mean_psf = sum(condition_psf_values) / len(condition_psf_values)
         variance = sum((p - mean_psf) ** 2 for p in condition_psf_values) / len(condition_psf_values)
         cv = (variance ** 0.5 / mean_psf) if mean_psf else 1.0
-        tight_cutoff, scattered_cutoff = (0.03, 0.10) if condition_comp_count == 2 else (0.08, 0.15)
-        if cv < tight_cutoff:
-            confidence_note = f"Only {condition_comp_count} sales match this exact condition here, but they're unusually consistent in price -- so we're genuinely confident in this figure despite the small sample."
-        elif cv < scattered_cutoff:
-            confidence_note = f"Only {condition_comp_count} sales match this exact condition here, with some variation in price between them -- treat this as a reasonable estimate, not a precise one."
+        if condition_comp_count == 2:
+            tight_cutoff, scattered_cutoff = 0.03, 0.10
+        elif condition_comp_count == 3:
+            tight_cutoff, scattered_cutoff = 0.05, 0.14
+        elif condition_comp_count == 4:
+            tight_cutoff, scattered_cutoff = 0.08, 0.16
+        elif condition_comp_count <= 7:
+            tight_cutoff, scattered_cutoff = 0.085, 0.15
         else:
-            confidence_note = f"Only {condition_comp_count} sales match this exact condition here, and they vary significantly in price -- this figure should be treated with real caution."
+            tight_cutoff, scattered_cutoff = 0.11, 0.18
+        if cv < tight_cutoff:
+            confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street, unusually consistent in price -- genuinely confident in this figure."
+        elif cv < scattered_cutoff:
+            confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street, with some variation in price between them -- a reasonable estimate, not a precise one."
+        else:
+            confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street, but they vary significantly in price -- treat this figure with real caution."
     else:
         confidence_note = "There's little to no direct sales data for this exact condition on this street, so this estimate leans on the street's overall price level instead."
 
