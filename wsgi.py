@@ -229,7 +229,7 @@ def radius_rescue_anchor(bundle, street, condition, lat, lng, radius_km=0.5, min
         return float(np.median(nearby)), len(nearby)
     return None, 0
 
-def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
+def predict(address, postcode, sqft, condition, property_type, bedrooms=None, era_override=None):
     bundle = load_bundle()
     features = bundle['features']
     street_psf = bundle['street_psf']
@@ -246,7 +246,13 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     lng = street_lng.get(street, -0.22)
     beds = bedrooms or round(street_beds.get(street, 3))
     sf = STREET_FEATURES.get(street, {})
-    era = 'pre_1919' if sf.get('pct_pre1919', 0.8) >= 0.5 else 'post_1919'
+    # Trust a real, client-supplied era for THIS property over the street-level
+    # blend -- a street's average construction date can be wrong for any one
+    # specific property on it (e.g. an infill or a mixed-era row).
+    if era_override in ('pre_1919', 'post_1919'):
+        era = era_override
+    else:
+        era = 'pre_1919' if sf.get('pct_pre1919', 0.8) >= 0.5 else 'post_1919'
     reception = sf.get('avg_reception', 2)
     ensuite = sf.get('avg_ensuite', 0)
     extension = sf.get('avg_extension', 1)
@@ -453,6 +459,7 @@ class handler(BaseHTTPRequestHandler):
             condition = data.get('condition')
             property_type = data.get('type', 'Terraced house')
             bedrooms = data.get('bedrooms')
+            era_override = data.get('era')
             if bedrooms:
                 bedrooms = int(bedrooms)
 
@@ -460,7 +467,7 @@ class handler(BaseHTTPRequestHandler):
                 self._respond(400, {'error': 'address, postcode and sqft required'})
                 return
 
-            result = predict(address, postcode, sqft, condition, property_type, bedrooms)
+            result = predict(address, postcode, sqft, condition, property_type, bedrooms, era_override)
             self._respond(200, result)
         except Exception as e:
             self._respond(500, {'error': str(e)})
