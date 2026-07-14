@@ -127,7 +127,10 @@ STREET_FEATURES = {
 }
 
 def _normalize_address(addr):
-    return re.sub(r'\s+', ' ', (addr or '').strip().lower())
+    # Strip commas too -- "84 Oliphant Street" and "84, Oliphant Street"
+    # must normalize to the same key so subject-exclusion actually matches.
+    s = re.sub(r'[,\s]+', ' ', (addr or '').strip().lower())
+    return s.strip()
 
 def select_comps(bundle, street, sector, condition, sqft, limit=6, subject_address=None):
     """Real comparable sales for this property: same street preferred,
@@ -178,6 +181,32 @@ def count_street_condition_comps(bundle, street, condition):
         return 0
     comps = bundle.get('comps', [])
     return sum(1 for c in comps if c.get('street') == street and c.get('condition') == condition)
+
+def select_area_comps(bundle, lat, lng, bedrooms, era, radius_km=0.25, subject_address=None):
+    """Real, dated sales within radius_km of the subject property, matching
+    bedrooms and era. This is a DISPLAY-ONLY view for the user's own reference
+    -- it is completely separate from the model's own anchor/comps logic and
+    has no effect on the predicted price. Sorted nearest-first."""
+    if lat is None or lng is None or bedrooms is None or not era:
+        return []
+    comps = bundle.get('comps', [])
+    subject_norm = _normalize_address(subject_address) if subject_address else None
+    out = []
+    for c in comps:
+        if subject_norm and _normalize_address(c.get('address')) == subject_norm:
+            continue
+        if c.get('lat') is None or c.get('lng') is None:
+            continue
+        if c.get('bedrooms') != bedrooms:
+            continue
+        if c.get('era') != era:
+            continue
+        d_km = _haversine_km(lat, lng, c['lat'], c['lng'])
+        if d_km > radius_km:
+            continue
+        out.append({**c, 'distanceM': round(d_km * 1000)})
+    out.sort(key=lambda c: c['distanceM'])
+    return out
 
 def radius_rescue_anchor(bundle, street, condition, lat, lng, radius_km=0.5, min_comps=2):
     """When a street+condition has too few comps to trust on its own, search
@@ -387,6 +416,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
     else:
         confidence = 'Low'
 
+    area_comps = select_area_comps(bundle, lat, lng, beds, era, subject_address=address)
+
     return {
         'estimate': estimate,
         'low': low,
@@ -401,6 +432,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         'median': median_price,
         'comparables': comps_top,
         'comparablesScope': comp_scope,
+        'areaComps': area_comps,
         'psf': round(estimate / sqft) if sqft else None,
         'sectorPsf': round(sector_psf.get(sector, 800)),
         'confidence': confidence,
