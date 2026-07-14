@@ -242,13 +242,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
             anchor = inference_anchors[anchor_key]
             source = 'street_condition'
         else:
-            rescued, rescued_n = radius_rescue_anchor(bundle, street, cond, lat, lng)
-            if rescued is not None:
-                anchor = rescued
-                source = f'radius_rescue_{rescued_n}_comps'
-            else:
-                anchor = sp_psf
-                source = 'street_blend'
+            anchor = sp_psf
+            source = 'street_blend'
         # If full_renovation has no anchor, cap it below modernisation
         if cond == 'full_renovation' and anchor_key not in inference_anchors:
             mod_anchor = inference_anchors.get(street + '|modernisation', sp_psf)
@@ -352,29 +347,31 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         low = estimate * 0.91
         high = estimate * 1.09
 
-    estimate = int(estimate)
-    low = int(low)
-    high = int(high)
+    estimate = round(estimate / 1000) * 1000
+    low = round(low / 1000) * 1000
+    high = round(high / 1000) * 1000
 
     comps_top, pool_size, median_price, comp_scope = select_comps(
         bundle, street, sector, condition, sqft, subject_address=address
     )
 
+    condition_psf_values = [c['psf'] for c in bundle.get('comps', [])
+                            if c.get('street') == street and c.get('condition') == condition and c.get('psf') is not None]
     if condition_comp_count >= 5:
-        confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street."
-    elif anchor_source and anchor_source.startswith('radius_rescue'):
-        n_rescued = anchor_source.split('_')[2]
-        confidence_note = (
-            f"Only {condition_comp_count} sale(s) of this exact condition on this street, "
-            f"so we included {n_rescued} similar sales from nearby streets to improve the estimate."
-        )
-    elif condition_comp_count >= 2:
-        confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street -- a small sample, treat with some caution."
+        confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street -- a solid, reliable sample."
+    elif condition_comp_count >= 2 and len(condition_psf_values) >= 2:
+        mean_psf = sum(condition_psf_values) / len(condition_psf_values)
+        variance = sum((p - mean_psf) ** 2 for p in condition_psf_values) / len(condition_psf_values)
+        cv = (variance ** 0.5 / mean_psf) if mean_psf else 1.0
+        tight_cutoff, scattered_cutoff = (0.03, 0.10) if condition_comp_count == 2 else (0.08, 0.15)
+        if cv < tight_cutoff:
+            confidence_note = f"Only {condition_comp_count} sales match this exact condition here, but they're unusually consistent in price -- so we're genuinely confident in this figure despite the small sample."
+        elif cv < scattered_cutoff:
+            confidence_note = f"Only {condition_comp_count} sales match this exact condition here, with some variation in price between them -- treat this as a reasonable estimate, not a precise one."
+        else:
+            confidence_note = f"Only {condition_comp_count} sales match this exact condition here, and they vary significantly in price -- this figure should be treated with real caution."
     else:
-        confidence_note = (
-            "Very few or no sales of this exact condition on this street. "
-            "This estimate leans on the street's overall price level rather than condition-specific data."
-        )
+        confidence_note = "There's little to no direct sales data for this exact condition on this street, so this estimate leans on the street's overall price level instead."
 
     if pool_size >= 15:
         confidence = 'High'
