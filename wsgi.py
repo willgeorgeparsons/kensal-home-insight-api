@@ -372,13 +372,13 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None):
         else:
             tight_cutoff, scattered_cutoff = 0.11, 0.18
         if cv < tight_cutoff:
-            confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street, unusually consistent in price -- genuinely confident in this figure."
+            confidence_note = f"{condition_comp_count} real sales of this exact condition on this street, consistently priced."
         elif cv < scattered_cutoff:
-            confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street, with some variation in price between them -- a reasonable estimate, not a precise one."
+            confidence_note = f"{condition_comp_count} real sales of this exact condition on this street, with some spread in price."
         else:
-            confidence_note = f"Based on {condition_comp_count} real sales matching this exact condition on this street, but they vary significantly in price -- treat this figure with real caution."
+            confidence_note = f"{condition_comp_count} real sales of this exact condition on this street, spanning a wider price range."
     else:
-        confidence_note = "There's little to no direct sales data for this exact condition on this street, so this estimate leans on the street's overall price level instead."
+        confidence_note = "Few direct sales of this exact condition on this street, so this estimate leans on the street's overall price level."
 
     if pool_size >= 15:
         confidence = 'High'
