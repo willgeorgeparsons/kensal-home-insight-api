@@ -235,13 +235,19 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     street_psf = bundle['street_psf']
     sector_psf = bundle['sector_psf']
     inference_anchors = bundle.get('inference_anchors', {})
+    college_park_psf = bundle.get('college_park_psf', 650.0)
     street_lat = bundle['street_lat']
     street_lng = bundle['street_lng']
     street_beds = bundle['street_beds']
 
     sector = get_sector(postcode)
     street = extract_street(address)
-    sp_psf = street_psf.get(street, sector_psf.get(sector, 800))
+    if street in street_psf:
+        sp_psf = street_psf[street]
+    elif sector == 'NW10 6':
+        sp_psf = college_park_psf
+    else:
+        sp_psf = sector_psf.get(sector, 800)
     lat = street_lat.get(street, 51.53)
     lng = street_lng.get(street, -0.22)
     beds = bedrooms or round(street_beds.get(street, 3))
@@ -278,7 +284,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
             source = 'street_condition'
         else:
             anchor = sp_psf
-            source = 'street_blend'
+            source = 'college_park_blend' if (sector == 'NW10 6' and street not in street_psf) else 'street_blend'
         # If full_renovation has no anchor, cap it below modernisation
         if cond == 'full_renovation' and anchor_key not in inference_anchors:
             mod_anchor = inference_anchors.get(street + '|modernisation', sp_psf)
