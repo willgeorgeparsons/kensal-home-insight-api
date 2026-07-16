@@ -236,6 +236,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     sector_psf = bundle['sector_psf']
     inference_anchors = bundle.get('inference_anchors', {})
     college_park_psf = bundle.get('college_park_psf', 650.0)
+    college_park_cond_psf = bundle.get('college_park_cond_psf', {})
     street_lat = bundle['street_lat']
     street_lng = bundle['street_lng']
     street_beds = bundle['street_beds']
@@ -282,6 +283,9 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         if anchor_key and anchor_key in inference_anchors:
             anchor = inference_anchors[anchor_key]
             source = 'street_condition'
+        elif sector == 'NW10 6' and cond in college_park_cond_psf:
+            anchor = college_park_cond_psf[cond]
+            source = 'college_park_condition'
         else:
             anchor = sp_psf
             source = 'college_park_blend' if (sector == 'NW10 6' and street not in street_psf) else 'street_blend'
