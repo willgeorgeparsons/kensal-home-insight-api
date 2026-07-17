@@ -357,7 +357,10 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     # in model_v2.json (e.g. an older deploy). The band is computed
     # against the RAW estimate then shifted by the same monotonic
     # correction applied to the point estimate, so width is preserved.
-    if 'quantile_models' in bundle:
+    if sector == 'NW10 6':
+        low = estimate * 0.91
+        high = estimate * 1.09
+    elif 'quantile_models' in bundle:
         p10_log = _run_model(bundle['quantile_models']['p10']['tree_info'], vec)
         p90_log = _run_model(bundle['quantile_models']['p90']['tree_info'], vec)
         p10_raw = float(np.exp(p10_log))
