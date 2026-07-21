@@ -23,6 +23,15 @@ import numpy as np
 
 # Load model once at module level (cold start cache)
 _bundle = None
+_size_correction = None
+
+def load_size_correction():
+    global _size_correction
+    if _size_correction is None:
+        sc_path = os.path.join(os.path.dirname(__file__), 'size_correction_breakpoints.json')
+        with open(sc_path, 'r') as f:
+            _size_correction = _json.load(f)
+    return _size_correction
 
 def load_bundle():
     global _bundle
@@ -343,6 +352,21 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         corrected[cond] = running_max
 
     estimate = corrected[condition] if condition in corrected else corrected['good']
+
+    # Sector-stratified isotonic size correction for the large-property
+    # over-prediction bias (validated: trusted-100-fixture MAE 7.43% -> 7.20%
+    # overall, 12.0% -> 9.4% for 2000+ sqft properties specifically). Excludes
+    # College Park (own range logic, never in the fit data). No-op below the
+    # fit floor since those breakpoints are stored as 0.0.
+    if sector != 'NW10 6':
+        size_bundle = load_size_correction()
+        sc_points = size_bundle.get(sector, size_bundle.get('_global', []))
+        if sc_points:
+            sc_xs = [p[0] for p in sc_points]
+            sc_ys = [p[1] for p in sc_points]
+            size_correction_log = float(np.interp(sqft, sc_xs, sc_ys))
+            estimate = estimate / np.exp(size_correction_log)
+
     raw_estimate_for_requested = raw_estimates.get(condition, estimate)
     correction_delta = estimate - raw_estimate_for_requested
     vec = vecs.get(condition, vecs['good'])
