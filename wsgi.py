@@ -345,6 +345,25 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         log_pred = _run_model(bundle['model']['tree_info'], vec)
         raw_estimates[cond] = float(np.exp(log_pred))
 
+    # When adjacent-tier raw predictions are inverted (a lower tier priced
+    # equal-or-higher than the next one up), the tree model can't distinguish
+    # them -- typically in micro-markets like College Park NW10 6 where
+    # lower-condition training examples are sparse. Derive the misbehaving
+    # lower tier from 'good' using its per-condition anchor psf ratio, so
+    # the tier spread comes from real sales evidence rather than being
+    # papered over by the monotonic clamp collapsing adjacent tiers to
+    # identical values.
+    good_raw_for_ratio = raw_estimates.get('good')
+    good_anchor_for_ratio = anchors_by_cond.get('good')
+    if good_raw_for_ratio and good_anchor_for_ratio and good_anchor_for_ratio > 0:
+        for i in range(len(CONDITIONS_IN_ORDER) - 1):
+            lower_cond = CONDITIONS_IN_ORDER[i]
+            higher_cond = CONDITIONS_IN_ORDER[i + 1]
+            if raw_estimates[lower_cond] >= raw_estimates[higher_cond]:
+                lower_anchor = anchors_by_cond.get(lower_cond)
+                if lower_anchor and lower_anchor > 0:
+                    raw_estimates[lower_cond] = good_raw_for_ratio * (lower_anchor / good_anchor_for_ratio)
+
     corrected = {}
     running_max = 0.0
     for cond in CONDITIONS_IN_ORDER:
