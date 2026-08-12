@@ -244,7 +244,12 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     street_psf = bundle['street_psf']
     sector_psf = bundle['sector_psf']
     inference_anchors = bundle.get('inference_anchors', {})
+    cond_street_tw_full = bundle.get('cond_street_tw_full', {})
+    cond_street_counts_full = bundle.get('cond_street_counts_full', {})
+    sector_condition_premium = bundle.get('sector_condition_premium', {})
     college_park_psf = bundle.get('college_park_psf', 650.0)
+    street_total_count = bundle.get('street_total_count', {})
+    sector_total_count = bundle.get('sector_total_count', {})
     college_park_cond_psf = bundle.get('college_park_cond_psf', {})
     street_lat = bundle['street_lat']
     street_lng = bundle['street_lng']
@@ -296,12 +301,30 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
             anchor = college_park_cond_psf[cond]
             source = 'college_park_condition'
         else:
+            # CONDITION-ADJUSTED fallback (fixes the bug where a street
+            # with no direct sales at this exact condition fell back to
+            # a condition-BLIND blended street average -- meaning e.g. a
+            # full_renovation property could price almost identically to
+            # a fully_refurbished one on the same thin-data street).
+            # Find this street's best-supported condition, adjust by the
+            # sector-wide premium ratio between conditions.
             anchor = sp_psf
             source = 'college_park_blend' if (sector == 'NW10 6' and street not in street_psf) else 'street_blend'
-        # If full_renovation has no anchor, cap it below modernisation
-        if cond == 'full_renovation' and anchor_key not in inference_anchors:
-            mod_anchor = inference_anchors.get(street + '|modernisation', sp_psf)
-            anchor = min(anchor, mod_anchor * 0.93)
+            street_conditions = {}
+            for key, n in cond_street_counts_full.items():
+                s_part, c_part = key.split('|', 1)
+                if s_part == street and n > 0:
+                    street_conditions[c_part] = n
+            if street_conditions:
+                best_cond = max(street_conditions, key=street_conditions.get)
+                best_n = street_conditions[best_cond]
+                best_psf = cond_street_tw_full.get(street + '|' + best_cond)
+                if best_psf is not None:
+                    target_prem = sector_condition_premium.get(sector + '|' + cond) if cond else None
+                    source_prem = sector_condition_premium.get(sector + '|' + best_cond)
+                    if target_prem and source_prem and source_prem > 0:
+                        anchor = best_psf * (target_prem / source_prem)
+                        source = 'condition_adjusted_fallback'
         anchors_by_cond[cond] = anchor
         anchor_sources[cond] = source
         row = {
@@ -312,7 +335,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
             'has_roof_terrace': 0, 'has_basement': 0, 'has_utility_room': 0,
             'has_ground_floor_wc': 0, 'has_converted_garage': 0,
             'best_sqft': sqft,
-            'days_since_2018': 2708,  # days from 2018-01-01 to 2025-06-01
+            'days_since_2018': (__import__('datetime').date.today() - __import__('datetime').date(2018, 1, 1)).days,
             'lat': lat, 'lng': lng, 'bedrooms': beds,
             'ensuite_count': ensuite, 'reception_count': reception,
             'sqft_per_bedroom': sqft / max(beds, 1),
@@ -393,50 +416,26 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     anchor_source = anchor_sources.get(condition, anchor_sources.get('good'))
     condition_comp_count = count_street_condition_comps(bundle, street, condition)
 
-    # Real calibrated range using the P10/P90 quantile models, matching
-    # the 1.4x band-width multiplier and safety clamp proven at 81%
-    # real coverage against the 100-property test set. Falls back to
-    # the old +/-9% behaviour only if quantile trees aren't present
-    # in model_v2.json (e.g. an older deploy). The band is computed
-    # against the RAW estimate then shifted by the same monotonic
-    # correction applied to the point estimate, so width is preserved.
-    if sector == 'NW10 6':
-        low = estimate * 0.91
-        high = estimate * 1.09
-    elif 'quantile_models' in bundle:
-        p10_log = _run_model(bundle['quantile_models']['p10']['tree_info'], vec)
-        p90_log = _run_model(bundle['quantile_models']['p90']['tree_info'], vec)
-        p10_raw = float(np.exp(p10_log))
-        p90_raw = float(np.exp(p90_log))
-        multiplier = bundle.get('band_width_multiplier', 1.0)
-
-        # Scale the band as a PERCENTAGE of the raw estimate, then apply that
-        # same percentage to the corrected estimate -- rather than shifting an
-        # absolute £ offset, which can push the band past its own edge when
-        # the monotonic correction is large relative to the original band
-        # (this was collapsing some bands to zero width, e.g. 84 Oliphant St).
-        lower_gap_pct = max(0.0, (raw_estimate_for_requested - p10_raw) / raw_estimate_for_requested) if raw_estimate_for_requested else 0.0
-        upper_gap_pct = max(0.0, (p90_raw - raw_estimate_for_requested) / raw_estimate_for_requested) if raw_estimate_for_requested else 0.0
-        # Quantile crossing guard: the P10/P90 models are trained
-        # independently from the main model, so nothing stops P90 from
-        # predicting BELOW (or P10 from predicting ABOVE) the main
-        # model's own point estimate on some inputs (seen on 84 Oliphant
-        # St -- P90 came in under the estimate for 'good' and
-        # 'fully_refurbished'). When that happens, fall back to a
-        # symmetric band using whichever side's gap IS trustworthy,
-        # rather than silently collapsing that side to zero width.
-        if upper_gap_pct <= 0 and lower_gap_pct > 0:
-            upper_gap_pct = lower_gap_pct
-        elif lower_gap_pct <= 0 and upper_gap_pct > 0:
-            lower_gap_pct = upper_gap_pct
-        low = estimate * (1 - multiplier * lower_gap_pct)
-        high = estimate * (1 + multiplier * upper_gap_pct)
-        # Safety clamp: estimate is ALWAYS inside the band, band is NEVER negative
-        low = max(0.0, min(low, estimate))
-        high = max(high, estimate)
-    else:
-        low = estimate * 0.91
-        high = estimate * 1.09
+    # REAL range: use the ACTUAL, empirically observed error rate for
+    # this property's real comp-count tier, measured directly from
+    # leak-free cross-validation. Replaces the previous P10/P90 quantile
+    # approach, which needed repeated emergency patches in production
+    # (a crossing guard for P90 predicting below the point estimate, a
+    # band-collapse fix, both triggered by 84 Oliphant St) and was
+    # independently found to misbehave the same way during 2026-08-11
+    # validation testing. This is simpler and cannot exhibit either
+    # failure mode, since it's a direct lookup, not a second model.
+    tier_mae_lookup = bundle.get('tier_mae_lookup', {})
+    honest_cv_mae_mean = bundle.get('honest_cv_mae_mean', 10.0)
+    def _tier_for_n(n):
+        if n == 0: return '0'
+        if n == 1: return '1'
+        if 2 <= n <= 3: return '2-3'
+        if 4 <= n <= 9: return '4-9'
+        return '10+'
+    range_pct = tier_mae_lookup.get(_tier_for_n(condition_comp_count), honest_cv_mae_mean) / 100.0
+    low = estimate * (1 - range_pct)
+    high = estimate * (1 + range_pct)
 
     estimate = round(estimate / 1000) * 1000
     low = round(low / 1000) * 1000
@@ -448,6 +447,16 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
 
     condition_psf_values = [c['psf'] for c in bundle.get('comps', [])
                             if c.get('street') == street and c.get('condition') == condition and c.get('psf') is not None]
+    sector_n = sector_total_count.get(sector, 0)
+    street_n = street_total_count.get(street, 0)
+    if street_n >= 10:
+        street_familiarity = 'High'
+    elif street_n >= 4:
+        street_familiarity = 'Moderate'
+    elif street_n >= 1:
+        street_familiarity = 'Low'
+    else:
+        street_familiarity = 'None'
     if condition_comp_count >= 2 and len(condition_psf_values) >= 2:
         mean_psf = sum(condition_psf_values) / len(condition_psf_values)
         variance = sum((p - mean_psf) ** 2 for p in condition_psf_values) / len(condition_psf_values)
@@ -468,8 +477,28 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
             confidence_note = f"{condition_comp_count} real sales of this exact condition on this street, with some spread in price."
         else:
             confidence_note = f"{condition_comp_count} real sales of this exact condition on this street, spanning a wider price range."
+        badge_tone = 'strong'
     else:
-        confidence_note = "Few direct sales of this exact condition on this street, so this estimate leans on the street's overall price level."
+        if sector_n >= 50:
+            badge_tone = 'sector-backed'
+            confidence_note = (
+                f"Backed by {sector_n} sales across {sector} -- no direct match on this exact "
+                f"street yet, so we've used real, current pricing patterns from the wider area "
+                f"instead of a street-specific guess."
+            )
+        elif street_n >= 4:
+            badge_tone = 'sector-backed'
+            confidence_note = (
+                f"This street is well-documented ({street_n} sales recorded), but we have "
+                f"few or no direct sale(s) at this exact condition -- estimated using this "
+                f"street's other sales, adjusted for typical condition differences in the area."
+            )
+        else:
+            badge_tone = 'limited'
+            confidence_note = (
+                f"Limited data both on this street ({street_n} sales) and across {sector} "
+                f"({sector_n} sales) -- this estimate carries more genuine uncertainty."
+            )
 
     if pool_size >= 15:
         confidence = 'High'
@@ -501,6 +530,10 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         'conditionCompCount': condition_comp_count,
         'anchorSource': anchor_source,
         'confidenceNote': confidence_note,
+        'streetFamiliarity': street_familiarity,
+        'streetTotalSales': street_n,
+        'sectorTotalSales': sector_n,
+        'badgeTone': badge_tone,
     }
 
 class handler(BaseHTTPRequestHandler):
