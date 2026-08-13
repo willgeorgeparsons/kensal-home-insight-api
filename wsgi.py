@@ -250,6 +250,7 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     college_park_psf = bundle.get('college_park_psf', 650.0)
     street_total_count = bundle.get('street_total_count', {})
     sector_total_count = bundle.get('sector_total_count', {})
+    global_condition_premium = bundle.get('global_condition_premium', {})
     college_park_cond_psf = bundle.get('college_park_cond_psf', {})
     street_lat = bundle['street_lat']
     street_lng = bundle['street_lng']
@@ -300,6 +301,31 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         elif sector == 'NW10 6' and cond in college_park_cond_psf:
             anchor = college_park_cond_psf[cond]
             source = 'college_park_condition'
+        elif sector == 'NW10 6' and college_park_cond_psf:
+            # College Park condition-adjusted fallback: this specific
+            # condition has no direct College Park data, but OTHER
+            # conditions do. Use College Park's own best-supported
+            # condition, adjusted by College Park's own condition
+            # premium ratio; if College Park itself has zero examples of
+            # this condition anywhere (so no local ratio can even be
+            # computed -- e.g. no full_renovation sale ever recorded),
+            # fall back to the CITY-WIDE condition premium as a final,
+            # still condition-aware resort.
+            best_cp_cond = max(college_park_cond_psf, key=college_park_cond_psf.get)
+            target_prem = sector_condition_premium.get('NW10 6|' + cond) if cond else None
+            source_prem = sector_condition_premium.get('NW10 6|' + best_cp_cond)
+            if target_prem and source_prem and source_prem > 0:
+                anchor = college_park_cond_psf[best_cp_cond] * (target_prem / source_prem)
+                source = 'college_park_condition_adjusted_fallback'
+            else:
+                global_target = global_condition_premium.get(cond) if cond else None
+                global_source = global_condition_premium.get(best_cp_cond)
+                if global_target and global_source and global_source > 0:
+                    anchor = college_park_cond_psf[best_cp_cond] * (global_target / global_source)
+                    source = 'college_park_global_condition_fallback'
+                else:
+                    anchor = college_park_psf
+                    source = 'college_park_blend'
         else:
             # CONDITION-ADJUSTED fallback (fixes the bug where a street
             # with no direct sales at this exact condition fell back to
@@ -366,7 +392,11 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         vec = build_row_and_vec(cond)
         vecs[cond] = vec
         log_pred = _run_model(bundle['model']['tree_info'], vec)
-        raw_estimates[cond] = float(np.exp(log_pred))
+        # RATIO-BASED TARGET (2026-08-12 fix): the model now predicts
+        # log(price / (anchor_psf * sqft)), matching the retrained model
+        # -- multiply back by anchor*sqft to get the real price. This
+        # guarantees the anchor drives every prediction directly.
+        raw_estimates[cond] = anchors_by_cond[cond] * sqft * float(np.exp(log_pred))
 
     # When adjacent-tier raw predictions are inverted (a lower tier priced
     # equal-or-higher than the next one up), the tree model can't distinguish
@@ -390,7 +420,18 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     corrected = {}
     running_max = 0.0
     for cond in CONDITIONS_IN_ORDER:
-        running_max = max(running_max, raw_estimates[cond])
+        # FIX: the old clamp did running_max = max(running_max, raw) --
+        # when a tier's raw estimate was below the previous tier's, it
+        # got completely OVERWRITTEN with the previous tier's exact
+        # value, making two genuinely different conditions round to the
+        # identical price (confirmed on 16 Clifford Gardens: full_renovation
+        # and modernisation both landing at exactly £1,220,000 despite
+        # different real anchors/comp counts). Now: still never decreasing,
+        # but nudges up by a small guaranteed step instead of duplicating.
+        if raw_estimates[cond] > running_max:
+            running_max = raw_estimates[cond]
+        else:
+            running_max = running_max * 1.015
         corrected[cond] = running_max
 
     estimate = corrected[condition] if condition in corrected else corrected['good']
