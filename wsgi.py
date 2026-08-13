@@ -252,6 +252,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     sector_total_count = bundle.get('sector_total_count', {})
     global_condition_premium = bundle.get('global_condition_premium', {})
     college_park_cond_psf = bundle.get('college_park_cond_psf', {})
+    college_park_cond_intercept = bundle.get('college_park_cond_intercept', {})
+    college_park_size_slope = bundle.get('college_park_size_slope', None)
     street_lat = bundle['street_lat']
     street_lng = bundle['street_lng']
     street_beds = bundle['street_beds']
@@ -298,6 +300,31 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         if anchor_key and anchor_key in inference_anchors:
             anchor = inference_anchors[anchor_key]
             source = 'street_condition'
+        elif sector == 'NW10 6' and cond in college_park_cond_intercept:
+            # SIZE-AWARE FIX (2026-08-13): College Park condition anchors
+            # now scale with the SUBJECT property's own sqft instead of
+            # using one flat psf for every size. price = exp(intercept) *
+            # sqft^slope, so anchor_psf (price/sqft) = exp(intercept) *
+            # sqft^(slope-1).
+            anchor = float(np.exp(college_park_cond_intercept[cond] + (college_park_size_slope - 1) * np.log(sqft)))
+            source = 'college_park_size_aware'
+        elif sector == 'NW10 6' and college_park_cond_intercept and college_park_size_slope is not None:
+            # Size-aware condition-adjusted fallback: this condition has no
+            # direct College Park regression intercept (too rare locally,
+            # e.g. full_renovation), but others do -- use College Park's
+            # best-supported condition's size-adjusted anchor at the
+            # subject's own sqft, scaled by the global condition premium
+            # ratio between the two conditions.
+            base_cond = 'good' if 'good' in college_park_cond_intercept else next(iter(college_park_cond_intercept))
+            base_anchor = float(np.exp(college_park_cond_intercept[base_cond] + (college_park_size_slope - 1) * np.log(sqft)))
+            global_target = global_condition_premium.get(cond) if cond else None
+            global_source = global_condition_premium.get(base_cond)
+            if global_target and global_source and global_source > 0:
+                anchor = base_anchor * (global_target / global_source)
+                source = 'college_park_size_aware_global_fallback'
+            else:
+                anchor = base_anchor
+                source = 'college_park_size_aware_blend'
         elif sector == 'NW10 6' and cond in college_park_cond_psf:
             anchor = college_park_cond_psf[cond]
             source = 'college_park_condition'
