@@ -141,6 +141,63 @@ def _normalize_address(addr):
     s = re.sub(r'[,\s]+', ' ', (addr or '').strip().lower())
     return s.strip()
 
+def select_radius_comps(bundle, lat, lng, property_type, bedrooms, limit=6, subject_address=None):
+    """Real comparable sales matched on property type and bedroom count --
+    e.g. '3 bed terraced houses' -- searched by radius around the subject
+    property, NOT restricted to its own street. This section exists to
+    build the user's confidence in the data, so it should reliably show
+    genuinely comparable sales rather than sometimes showing nothing.
+    Closest match first, then most recent as the tiebreaker. Starts at a
+    tight 250m radius and expands outward only if that is too thin.
+    Returns (comps_list, pool_size, median_price, radius_km_used)."""
+    def norm_type(t):
+        if not t:
+            return None
+        t = str(t).lower().strip().replace('-', ' ')
+        t = t.replace(' house', '').strip()
+        for key in ('terraced', 'semi detached', 'detached', 'end of terrace'):
+            if key in t:
+                return key
+        return t or None
+    if lat is None or lng is None:
+        return [], 0, None, None
+    target_type = norm_type(property_type)
+    all_comps = bundle.get('comps', [])
+    subject_norm = _normalize_address(subject_address) if subject_address else None
+    pool = []
+    for c in all_comps:
+        if subject_norm and _normalize_address(c.get('address')) == subject_norm:
+            continue
+        if c.get('lat') is None or c.get('lng') is None:
+            continue
+        if bedrooms is not None and c.get('bedrooms') != bedrooms:
+            continue
+        if target_type and norm_type(c.get('property_type')) != target_type:
+            continue
+        d_km = _haversine_km(lat, lng, c['lat'], c['lng'])
+        entry = dict(c)
+        entry['distanceM'] = round(d_km * 1000)
+        entry['_d_km'] = d_km
+        pool.append(entry)
+    if not pool:
+        return [], 0, None, None
+    selected_pool = pool
+    used_radius = 2.0
+    for radius_km in (0.25, 0.5, 1.0, 2.0):
+        in_radius = [c for c in pool if c['_d_km'] <= radius_km]
+        if len(in_radius) >= 3 or radius_km == 2.0:
+            used_radius = radius_km
+            selected_pool = in_radius
+            break
+    def sort_key(c):
+        recency = c.get('date') or ''
+        return (c['_d_km'], ''.join(chr(255 - ord(ch)) for ch in recency))
+    selected_pool.sort(key=sort_key)
+    top = [{k: v for k, v in c.items() if k != '_d_km'} for c in selected_pool[:limit]]
+    prices = [c['price'] for c in selected_pool if c.get('price')]
+    median_price = int(statistics.median(prices)) if prices else None
+    return top, len(selected_pool), median_price, used_radius
+
 def select_comps(bundle, street, sector, condition, sqft, limit=6, subject_address=None):
     """Real comparable sales for this property: same street preferred,
     falls back to sector if the street has too few. Sorted so the most
@@ -509,8 +566,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     low = round(low / 1000) * 1000
     high = round(high / 1000) * 1000
 
-    comps_top, pool_size, median_price, comp_scope = select_comps(
-        bundle, street, sector, condition, sqft, subject_address=address
+    comps_top, pool_size, median_price, comp_scope = select_radius_comps(
+        bundle, lat, lng, property_type, beds, subject_address=address
     )
 
     condition_psf_values = [c['psf'] for c in bundle.get('comps', [])
