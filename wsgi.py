@@ -354,17 +354,28 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     def build_row_and_vec(cond):
         cond_ord = CONDITION_ORDER.get(cond, 3) if cond else 3
         anchor_key = street + '|' + cond if cond else None
-        if anchor_key and anchor_key in inference_anchors:
-            anchor = inference_anchors[anchor_key]
-            source = 'street_condition'
-        elif sector == 'NW10 6' and cond in college_park_cond_intercept:
-            # SIZE-AWARE FIX (2026-08-13): College Park condition anchors
-            # now scale with the SUBJECT property's own sqft instead of
-            # using one flat psf for every size. price = exp(intercept) *
-            # sqft^slope, so anchor_psf (price/sqft) = exp(intercept) *
-            # sqft^(slope-1).
+        if sector == 'NW10 6' and cond in college_park_cond_intercept:
+            # SIZE-AWARE FIX (2026-08-13, reordered 2026-08-28): College
+            # Park condition anchors scale with the SUBJECT property's own
+            # sqft instead of using one flat psf for every size. price =
+            # exp(intercept) * sqft^slope, so anchor_psf (price/sqft) =
+            # exp(intercept) * sqft^(slope-1). Deliberately checked BEFORE
+            # the flat street_condition match below: College Park streets
+            # are small and physically heterogeneous, so a street's direct
+            # real comps can easily be a very different size to the
+            # subject property (confirmed live: 21 Letchford Gardens'
+            # fully_refurbished anchor was pinned at a flat 534psf, taken
+            # from two much larger real Letchford Gardens sales, 1356 and
+            # 1808 sqft, while real fully_refurbished sales near the
+            # subject's own ~1068-1318 sqft size sold at 1012-1081psf --
+            # the flat street-level match was silently overriding the
+            # size-aware fix for exactly the properties it was built to
+            # help). Every other sector is unaffected by this reordering.
             anchor = float(np.exp(college_park_cond_intercept[cond] + (college_park_size_slope - 1) * np.log(sqft)))
             source = 'college_park_size_aware'
+        elif anchor_key and anchor_key in inference_anchors:
+            anchor = inference_anchors[anchor_key]
+            source = 'street_condition'
         elif sector == 'NW10 6' and college_park_cond_intercept and college_park_size_slope is not None:
             # Size-aware condition-adjusted fallback: this condition has no
             # direct College Park regression intercept (too rare locally,
