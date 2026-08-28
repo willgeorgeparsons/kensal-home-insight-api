@@ -540,17 +540,21 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     anchor = anchors_by_cond.get(condition, anchors_by_cond['good'])
     anchor_source = anchor_sources.get(condition, anchor_sources.get('good'))
     condition_comp_count = count_street_condition_comps(bundle, street, condition)
+    condition_psf_values = [c['psf'] for c in bundle.get('comps', [])
+                            if c.get('street') == street and c.get('condition') == condition and c.get('psf') is not None]
 
-    # REAL range: use the ACTUAL, empirically observed error rate for
-    # this property's real comp-count tier, measured directly from
-    # leak-free cross-validation. Replaces the previous P10/P90 quantile
-    # approach, which needed repeated emergency patches in production
-    # (a crossing guard for P90 predicting below the point estimate, a
-    # band-collapse fix, both triggered by 84 Oliphant St) and was
-    # independently found to misbehave the same way during 2026-08-11
-    # validation testing. This is simpler and cannot exhibit either
-    # failure mode, since it's a direct lookup, not a second model.
-    tier_mae_lookup = bundle.get('tier_mae_lookup', {})
+    # REAL range: uses the ACTUAL, empirically observed error DISTRIBUTION
+    # for this property's real comp-count tier, measured directly from
+    # leak-free cross-validation -- asymmetric (real P10/P90 of signed
+    # error, not a flat +/-MAE), and for tier 2-3 specifically (the one
+    # tier where this was validated to matter) further split by whether
+    # THIS property's own comps are tightly clustered or scattered in
+    # price. Still a direct historical lookup, not a fitted quantile
+    # model, so it cannot exhibit the crossing/band-collapse bugs the
+    # earlier P10/P90 quantile approach had (repeated emergency patches,
+    # both triggered by 84 Oliphant St, and independently found to
+    # misbehave the same way during 2026-08-11 validation testing).
+    range_lookup = bundle.get('range_lookup', {})
     honest_cv_mae_mean = bundle.get('honest_cv_mae_mean', 10.0)
     def _tier_for_n(n):
         if n == 0: return '0'
@@ -558,9 +562,39 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         if 2 <= n <= 3: return '2-3'
         if 4 <= n <= 9: return '4-9'
         return '10+'
-    range_pct = tier_mae_lookup.get(_tier_for_n(condition_comp_count), honest_cv_mae_mean) / 100.0
-    low = estimate * (1 - range_pct)
-    high = estimate * (1 + range_pct)
+    range_tier = _tier_for_n(condition_comp_count)
+    range_entry = None
+    range_basis = None
+    if range_tier == '2-3' and condition_comp_count in (2, 3) and range_tier in range_lookup:
+        tier23 = range_lookup[range_tier]
+        if len(condition_psf_values) >= 2:
+            mean_psf = sum(condition_psf_values) / len(condition_psf_values)
+            variance = sum((p - mean_psf) ** 2 for p in condition_psf_values) / len(condition_psf_values)
+            cv_val = (variance ** 0.5 / mean_psf) if mean_psf else 1.0
+            tight_c, scat_c = (0.03, 0.10) if condition_comp_count == 2 else (0.05, 0.14)
+            consistency = 'tight' if cv_val < tight_c else ('scattered' if cv_val > scat_c else 'mid')
+            range_entry = tier23.get(consistency) or tier23.get('combined')
+            range_basis = f"2-3_{consistency}" if tier23.get(consistency) else "2-3_combined"
+        else:
+            range_entry = tier23.get('combined')
+            range_basis = "2-3_combined"
+    elif range_tier in range_lookup:
+        range_entry = range_lookup[range_tier]
+        range_basis = range_tier
+    if range_entry:
+        p10 = range_entry['p10']
+        p90 = range_entry['p90']
+        high = estimate / (1 + p10 / 100)
+        low = estimate / (1 + p90 / 100)
+    else:
+        # Fallback for a stale bundle without range_lookup, or a tier with
+        # too few real fold-runs to trust -- flat symmetric MAE, same as
+        # the original behaviour.
+        range_pct = honest_cv_mae_mean / 100.0
+        low = estimate * (1 - range_pct)
+        high = estimate * (1 + range_pct)
+        range_basis = "fallback_flat"
+    range_width_pct = round(((high - low) / 2) / estimate * 100, 1) if estimate else None
 
     estimate = round(estimate / 1000) * 1000
     low = round(low / 1000) * 1000
@@ -569,9 +603,6 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
     comps_top, pool_size, median_price, comp_scope = select_radius_comps(
         bundle, lat, lng, property_type, beds, subject_address=address
     )
-
-    condition_psf_values = [c['psf'] for c in bundle.get('comps', [])
-                            if c.get('street') == street and c.get('condition') == condition and c.get('psf') is not None]
     sector_n = sector_total_count.get(sector, 0)
     street_n = street_total_count.get(street, 0)
     if street_n >= 10:
@@ -638,6 +669,8 @@ def predict(address, postcode, sqft, condition, property_type, bedrooms=None, er
         'estimate': estimate,
         'low': low,
         'high': high,
+        'rangeWidthPct': range_width_pct,
+        'rangeBasis': range_basis,
         'sector': sector,
         'street': street,
         'era': era,
